@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Advanced 3D Model Viewer</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: Arial, sans-serif; 
+            background-color: #f0f0f0;
+        }
+        canvas { 
+            width: 100%; 
+            height: 100%; 
+            position: absolute;
+        }
+        #controls {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            z-index: 10;
+        }
+        #error-message {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(255, 0, 0, 0.7);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            display: none;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <label>Rotation Speed:</label>
+        <input type="range" id="rotationSpeed" min="0" max="0.1" step="0.01" value="0.02">
+        <br>
+        <label>Smoothing:</label>
+        <input type="range" id="smoothingFactor" min="0" max="0.9" step="0.1" value="0.5">
+    </div>
+    <div id="error-message"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+
+    <script>
+        class AdvancedModelViewer {
+            constructor() {
+                this.initScene();
+                this.initLighting();
+                this.initControls();
+                this.loadModel();
+                this.setupEventListeners();
+                this.animate();
+            }
+
+            initScene() {
+                // Scene setup
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0xf0f0f0);
+
+                // Camera
+                this.camera = new THREE.PerspectiveCamera(
+                    75, 
+                    window.innerWidth / window.innerHeight, 
+                    0.1, 
+                    1000
+                );
+                this.camera.position.z = 5;
+
+                // Renderer
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                document.body.appendChild(this.renderer.domElement);
+
+                // Rotation tracking
+                this.rotation = {
+                    x: 0,
+                    y: 0,
+                    z: 0
+                };
+                this.targetRotation = {
+                    x: 0,
+                    y: 0,
+                    z: 0
+                };
+            }
+
+            initLighting() {
+                const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+                this.scene.add(ambientLight);
+
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(5, 5, 5);
+                this.scene.add(directionalLight);
+            }
+
+            initControls() {
+                this.rotationSpeedElement = document.getElementById('rotationSpeed');
+                this.smoothingFactorElement = document.getElementById('smoothingFactor');
+
+                this.isMouseDown = false;
+                this.previousMousePosition = { x: 0, y: 0 };
+            }
+
+            setupEventListeners() {
+                const canvas = this.renderer.domElement;
+
+                canvas.addEventListener('mousedown', this.onMouseDown.bind(this));
+                canvas.addEventListener('mousemove', this.onMouseMove.bind(this));
+                canvas.addEventListener('mouseup', this.onMouseUp.bind(this));
+                canvas.addEventListener('wheel', this.onWheel.bind(this));
+                window.addEventListener('resize', this.onWindowResize.bind(this));
+            }
+
+            onMouseDown(e) {
+                this.isMouseDown = true;
+                this.previousMousePosition = { x: e.clientX, y: e.clientY };
+            }
+
+            onMouseMove(e) {
+                if (!this.isMouseDown) return;
+                
+                const deltaMove = {
+                    x: e.clientX - this.previousMousePosition.x,
+                    y: e.clientY - this.previousMousePosition.y
+                };
+
+                const rotationSpeed = parseFloat(this.rotationSpeedElement.value);
+                
+                // Smooth rotation interpolation
+                this.targetRotation.y += deltaMove.x * rotationSpeed;
+                this.targetRotation.x += deltaMove.y * rotationSpeed;
+
+                this.previousMousePosition = { x: e.clientX, y: e.clientY };
+            }
+
+            onMouseUp() {
+                this.isMouseDown = false;
+            }
+
+            onWheel(e) {
+                // Zoom with smooth interpolation
+                const smoothingFactor = parseFloat(this.smoothingFactorElement.value);
+                const zoomSpeed = e.deltaY * 0.001;
+                this.camera.position.z = Math.max(
+                    1, 
+                    Math.min(10, this.camera.position.z * (1 + zoomSpeed * (1 + smoothingFactor)))
+                );
+            }
+
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+
+            loadModel() {
+                const loader = new THREE.GLTFLoader();
+                const modelPaths = [
+                    '/model/model.glb',
+                    '/model/model.gltf'
+                ];
+
+                const tryLoadModel = (paths) => {
+                    if (paths.length === 0) {
+                        this.showError('No valid model found. Please check your model files.');
+                        this.createFallbackCube();
+                        return;
+                    }
+
+                    const currentPath = paths[0];
+                    
+                    loader.load(
+                        currentPath,
+                        (gltf) => {
+                            console.log(`Model loaded successfully from ${currentPath}`);
+                            
+                            // Center and scale the model
+                            const box = new THREE.Box3().setFromObject(gltf.scene);
+                            const center = box.getCenter(new THREE.Vector3());
+                            gltf.scene.position.sub(center);
+
+                            // Scale model to fit
+                            const size = box.getSize(new THREE.Vector3());
+                            const maxDim = Math.max(size.x, size.y, size.z);
+                            const scaleFactor = 3 / maxDim;
+                            gltf.scene.scale.set(scaleFactor, scaleFactor, scaleFactor);
+
+                            this.model = gltf.scene;
+                            this.scene.add(this.model);
+                        },
+                        (xhr) => {
+                            console.log(`Loading ${currentPath}: ${(xhr.loaded / xhr.total * 100)}% loaded`);
+                        },
+                        (error) => {
+                            console.warn(`Error loading ${currentPath}:`, error);
+                            tryLoadModel(paths.slice(1));
+                        }
+                    );
+                };
+
+                tryLoadModel(modelPaths);
+            }
+
+            createFallbackCube() {
+                const geometry = new THREE.BoxGeometry(1, 1, 1);
+                const material = new THREE.MeshStandardMaterial({ 
+                    color: 0x00ff00,
+                    metalness: 0.5,
+                    roughness: 0.5
+                });
+                this.model = new THREE.Mesh(geometry, material);
+                this.scene.add(this.model);
+            }
+
+            showError(message) {
+                const errorDiv = document.getElementById('error-message');
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+                console.error(message);
+            }
+
+            animate() {
+                requestAnimationFrame(this.animate.bind(this));
+
+                // Smooth rotation interpolation
+                const smoothingFactor = parseFloat(this.smoothingFactorElement.value);
+                
+                if (this.model) {
+                    this.rotation.x += (this.targetRotation.x - this.rotation.x) * (1 - smoothingFactor);
+                    this.rotation.y += (this.targetRotation.y - this.rotation.y) * (1 - smoothingFactor);
+                    
+                    this.model.rotation.x = this.rotation.x;
+                    this.model.rotation.y = this.rotation.y;
+                }
+
+                this.renderer.render(this.scene, this.camera);
+            }
+        }
+
+        // Initialize viewer
+        window.addEventListener('load', () => {
+            new AdvancedModelViewer();
+        });
+    </script>
+</body>
+</html>
